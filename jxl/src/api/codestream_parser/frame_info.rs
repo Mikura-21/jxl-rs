@@ -167,6 +167,7 @@ impl FrameInfo {
             decode_options.sample_limit,
             frame_header.size_upsampled(),
             frame_header.num_extra_channels as usize,
+            level5_limits,
         )?;
 
         if level5_limits

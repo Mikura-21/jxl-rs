@@ -13,6 +13,25 @@ use crate::error::Error;
 use crate::image::{Image, ImageDataType};
 use crate::tests::decode::{DecodeParams, as_output_buffers, compare_frames, decode, scan_frames};
 
+#[test]
+fn reject_oversized_crop_before_toc() {
+    // An 8x8 image with a 2^30 x 2^30 cropped frame, without its TOC or section data.
+    let header = [
+        0xff, 0x0a, 0x01, 0xc0, 0x08, 0x11, 0x00, 0x00, 0x06, 0xb8, 0xfd, 0xff, 0x07, 0xb8, 0xfd,
+        0xff, 0x49, 0x00,
+    ];
+    let mut decoder = JxlDecoder::new(JxlDecoderOptions::default());
+    let mut input = header.as_slice();
+    assert_eq!(
+        decoder.process(&mut input, None, None).unwrap(),
+        Event::BasicInfo
+    );
+    assert!(matches!(
+        decoder.process(&mut input, None, None),
+        Err(Error::LevelLimitExceeded { .. })
+    ));
+}
+
 // OOO jxlp boxes require any frame to start in a box that has all the logically-before
 // boxes physically before it, and all the logically-after boxes physically after it.
 // This test file does *not* satisfy this property.
