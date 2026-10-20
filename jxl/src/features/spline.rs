@@ -627,7 +627,9 @@ simd_function!(
         let (x0, y) = row_pos;
         let x1 = x0 + xsize;
         let clamped_x0 = x0.max((segment.center_x - segment.maximum_distance).round() as usize);
-        let clamped_x1 = x1.min((segment.center_x + segment.maximum_distance).round() as usize + 1);
+        let clamped_x1 = x1.min(
+            ((segment.center_x + segment.maximum_distance).round() as usize).saturating_add(1),
+        );
 
         if clamped_x1 <= clamped_x0 {
             return;
