@@ -681,10 +681,10 @@ impl Splines {
         high_precision: bool,
         segments_by_y: &mut Vec<(u64, usize)>,
     ) {
-        if sigma.is_infinite()
+        if !sigma.is_finite()
             || sigma == 0.0
-            || (1.0 / sigma).is_infinite()
-            || intensity.is_infinite()
+            || !(1.0 / sigma).is_finite()
+            || !intensity.is_finite()
         {
             return;
         }
