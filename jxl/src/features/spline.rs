@@ -367,7 +367,7 @@ pub struct Splines {
     pub starting_points: Vec<Point>,
     segments: Vec<SplineSegment>,
     segment_indices: Vec<usize>,
-    segment_y_start: Vec<u64>,
+    segment_y_start: Vec<isize>,
 }
 
 fn draw_centripetal_catmull_rom_spline(points: &[Point]) -> Result<Vec<Point>> {
@@ -672,6 +672,7 @@ impl Splines {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_segment(
         &mut self,
         center: &Point,
@@ -679,7 +680,8 @@ impl Splines {
         color: [f32; 3],
         sigma: f32,
         high_precision: bool,
-        segments_by_y: &mut Vec<(u64, usize)>,
+        image_ysize: u64,
+        segment_spans: &mut Vec<ops::Range<usize>>,
     ) {
         if !sigma.is_finite()
             || sigma == 0.0
@@ -704,14 +706,18 @@ impl Splines {
             sigma_over_4_times_intensity: 0.25 * sigma * intensity,
             maximum_distance: max_distance,
         };
-        let y0 = (center.y - max_distance).round() as i64;
-        let y1 = (center.y + max_distance).round() as i64 + 1;
-        for y in 0.max(y0)..y1 {
-            segments_by_y.push((y as u64, self.segments.len()));
+        let y0 = ((center.y - max_distance).round() as i64).max(0);
+        let y1 = ((center.y + max_distance).round() as i64)
+            .saturating_add(1)
+            .min(image_ysize as i64);
+        if y1 <= y0 {
+            return;
         }
+        segment_spans.push(y0 as usize..y1 as usize);
         self.segments.push(segment);
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn add_segments_from_points(
         &mut self,
         spline: &Spline,
@@ -719,7 +725,8 @@ impl Splines {
         length: f32,
         desired_distance: f32,
         high_precision: bool,
-        segments_by_y: &mut Vec<(u64, usize)>,
+        image_ysize: u64,
+        segment_spans: &mut Vec<ops::Range<usize>>,
     ) {
         let inv_length = 1.0 / length;
         for (point_index, (point, multiplier)) in points_to_draw.iter().enumerate() {
@@ -742,7 +749,8 @@ impl Splines {
                 color,
                 sigma,
                 high_precision,
-                segments_by_y,
+                image_ysize,
+                segment_spans,
             );
         }
     }
@@ -791,7 +799,7 @@ impl Splines {
             );
         }
 
-        let mut segments_by_y = Vec::new();
+        let mut segment_spans = Vec::new();
 
         self.segments.clear();
         for spline in splines {
@@ -813,31 +821,42 @@ impl Splines {
                 length,
                 DESIRED_RENDERING_DISTANCE,
                 high_precision,
-                &mut segments_by_y,
+                image_ysize,
+                &mut segment_spans,
             );
         }
 
-        // TODO(from libjxl): Consider linear sorting here.
-        segments_by_y.sort_unstable_by_key(|segment| segment.0);
-
-        self.segment_indices.clear();
-        self.segment_indices.try_reserve(segments_by_y.len())?;
-        self.segment_indices.resize(segments_by_y.len(), 0);
-
+        let height = image_ysize as usize;
+        let y_start_len = height.checked_add(2).ok_or(Error::SizeOverflow)?;
         self.segment_y_start.clear();
-        self.segment_y_start.try_reserve(image_ysize as usize + 1)?;
-        self.segment_y_start.resize(image_ysize as usize + 1, 0);
+        self.segment_y_start.try_reserve(y_start_len)?;
+        self.segment_y_start.resize(y_start_len, 0);
+        let population = &mut self.segment_y_start[1..];
 
-        for (i, segment) in segments_by_y.iter().enumerate() {
-            self.segment_indices[i] = segment.1;
-            let y = segment.0;
-            if y < image_ysize {
-                self.segment_y_start[y as usize + 1] += 1;
+        // Count row coverage with a difference array, then reuse it as write cursors.
+        for span in &segment_spans {
+            population[span.start] += 1;
+            population[span.end] -= 1;
+        }
+        let mut coverage = 0isize;
+        let mut total = 0isize;
+        for count in &mut population[..height] {
+            coverage += *count;
+            *count = total;
+            total = total.checked_add(coverage).ok_or(Error::SizeOverflow)?;
+        }
+        self.segment_indices.clear();
+        self.segment_indices.try_reserve(total as usize)?;
+        self.segment_indices.resize(total as usize, 0);
+
+        // Filling each row advances its cursor to the start of the next row.
+        for (index, span) in segment_spans.iter().enumerate() {
+            for y in span.clone() {
+                self.segment_indices[population[y] as usize] = index;
+                population[y] += 1;
             }
         }
-        for y in 0..image_ysize {
-            self.segment_y_start[y as usize + 1] += self.segment_y_start[y as usize];
-        }
+        self.segment_y_start.truncate(height + 1);
         Ok(())
     }
 
@@ -1765,7 +1784,7 @@ mod test_splines {
     #[test]
     fn spline_segments_add_segment() -> Result<(), Error> {
         let mut splines = Splines::default();
-        let mut segments_by_y = Vec::<(u64, usize)>::new();
+        let mut segment_spans = Vec::new();
 
         splines.add_segment(
             &Point { x: 10.0, y: 20.0 },
@@ -1773,7 +1792,8 @@ mod test_splines {
             [0.5, 0.6, 0.7],
             0.8,
             true,
-            &mut segments_by_y,
+            500,
+            &mut segment_spans,
         );
         // Golden numbers come from libjxl.
         let want_segment = SplineSegment {
@@ -1786,28 +1806,15 @@ mod test_splines {
         };
         assert_eq!(splines.segments.len(), 1);
         verify_segment_almost_equal(&splines.segments[0], &want_segment);
-        let want_segments_by_y = [
-            (16, 0),
-            (17, 0),
-            (18, 0),
-            (19, 0),
-            (20, 0),
-            (21, 0),
-            (22, 0),
-            (23, 0),
-            (24, 0),
-        ];
-        for (got, want) in zip(segments_by_y.iter(), want_segments_by_y.iter()) {
-            assert_eq!(got.0, want.0);
-            assert_eq!(got.1, want.1);
-        }
+        assert_eq!(segment_spans.len(), 1);
+        assert_eq!(segment_spans[0], 16..25);
         Ok(())
     }
 
     #[test]
     fn spline_segments_add_segments_from_points() -> Result<(), Error> {
         let mut splines = Splines::default();
-        let mut segments_by_y = Vec::<(u64, usize)>::new();
+        let mut segment_spans = Vec::new();
         let mut color_dct = [Dct32::default(); 3];
         for (channel_index, channel_dct) in color_dct.iter_mut().enumerate() {
             for (coeff_index, coeff) in channel_dct.0.iter_mut().enumerate() {
@@ -1835,7 +1842,8 @@ mod test_splines {
             SQRT_2 + 1.0,
             DESIRED_RENDERING_DISTANCE,
             true,
-            &mut segments_by_y,
+            500,
+            &mut segment_spans,
         );
         // Golden numbers come from libjxl.
         let want_segments = [
@@ -1868,15 +1876,7 @@ mod test_splines {
         for (got, want) in zip(splines.segments.iter(), want_segments.iter()) {
             verify_segment_almost_equal(got, want);
         }
-        let want_segments_by_y: Vec<(u64, usize)> = (0..=129)
-            .map(|c| (c, 0))
-            .chain((16..=26).map(|c| (c, 1)))
-            .chain((17..=25).map(|c| (c, 2)))
-            .collect();
-        for (got, want) in zip(segments_by_y.iter(), want_segments_by_y.iter()) {
-            assert_eq!(got.0, want.0);
-            assert_eq!(got.1, want.1);
-        }
+        assert_eq!(segment_spans, [0..130, 16..27, 17..26]);
         Ok(())
     }
 
@@ -1980,7 +1980,7 @@ mod test_splines {
             true,
             false,
         )?;
-        assert_eq!(splines.segments.len(), 1940);
+        assert_eq!(splines.segments.len(), 1885);
         let want_segments_sample = [
             (
                 22,
@@ -1994,7 +1994,7 @@ mod test_splines {
                 },
             ),
             (
-                474,
+                468,
                 SplineSegment {
                     center_x: -16.45600891,
                     center_y: 78.81845856,
@@ -2005,7 +2005,7 @@ mod test_splines {
                 },
             ),
             (
-                835,
+                829,
                 SplineSegment {
                     center_x: -71.93701172,
                     center_y: 230.0635529,
@@ -2016,7 +2016,7 @@ mod test_splines {
                 },
             ),
             (
-                1066,
+                1058,
                 SplineSegment {
                     center_x: -126.2593002,
                     center_y: -22.97857094,
@@ -2027,7 +2027,7 @@ mod test_splines {
                 },
             ),
             (
-                1328,
+                1320,
                 SplineSegment {
                     center_x: 73.70871735,
                     center_y: 56.31413269,
@@ -2038,7 +2038,7 @@ mod test_splines {
                 },
             ),
             (
-                1545,
+                1527,
                 SplineSegment {
                     center_x: 77.48892975,
                     center_y: -92.33877563,
@@ -2049,7 +2049,7 @@ mod test_splines {
                 },
             ),
             (
-                1774,
+                1727,
                 SplineSegment {
                     center_x: -16.43594933,
                     center_y: -144.8626556,
@@ -2060,7 +2060,7 @@ mod test_splines {
                 },
             ),
             (
-                1929,
+                1874,
                 SplineSegment {
                     center_x: 61.19338608,
                     center_y: -10.70717049,
