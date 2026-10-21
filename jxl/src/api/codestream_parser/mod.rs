@@ -59,11 +59,39 @@ fn level5_limits(input: &CodestreamInput, decode_options: &JxlDecoderOptions) ->
         || input.box_parser().container_level() != Some(ProfileLevel::Main10)
 }
 
+fn check_level_size_limits((xs, ys): (usize, usize), level5_limits: bool) -> Result<()> {
+    let max_dimension = 1u64 << if level5_limits { 18 } else { 30 };
+    for (name, dimension) in [("width", xs), ("height", ys)] {
+        if dimension as u64 > max_dimension {
+            return Err(Error::level_limit(
+                level5_limits,
+                name,
+                dimension as u64,
+                max_dimension,
+            ));
+        }
+    }
+    let pixels = (xs as u64) * (ys as u64);
+    let max_pixels = 1u64 << if level5_limits { 28 } else { 40 };
+    if pixels > max_pixels {
+        return Err(Error::level_limit(
+            level5_limits,
+            "pixels",
+            pixels,
+            max_pixels,
+        ));
+    }
+    Ok(())
+}
+
 fn check_size_limit(
     pixel_limit: Option<usize>,
     (xs, ys): (usize, usize),
     num_ec: usize,
+    level5_limits: bool,
 ) -> Result<()> {
+    check_level_size_limits((xs, ys), level5_limits)?;
+
     if let Some(limit) = pixel_limit {
         let xs = xs.max(16); // xsize is always at least 64 bytes.
         let total_pixels = xs.saturating_mul(ys).saturating_mul(3 + num_ec);
