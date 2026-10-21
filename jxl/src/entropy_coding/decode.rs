@@ -86,7 +86,7 @@ impl Codes {
 pub struct Histograms {
     lz77_params: Lz77Params,
     lz77_length_uint: Option<HybridUint>,
-    context_map: Vec<u8>,
+    context_map: ContextMap,
     /// Explicitly stored: context_map can get padded so we cannot use .last()
     lz_dist_cluster: u8,
     // TODO(veluca): figure out why this is unused.
@@ -669,14 +669,14 @@ impl Histograms {
         let context_map = if num_contexts > 1 {
             decode_context_map(num_contexts, br, lz77_scratch)?
         } else {
-            vec![0]
+            ContextMap::AllZero(1)
         };
         assert_eq!(context_map.len(), num_contexts);
 
         // Capture the LZ77 distance cluster BEFORE any later resize() can pad
         // context_map with zeros (see Histograms::resize and Frame::decode).
         let lz_dist_cluster = if lz77_params.enabled {
-            *context_map.last().unwrap()
+            context_map.last()
         } else {
             0
         };
@@ -689,7 +689,7 @@ impl Histograms {
         };
         // Note: cluster indices are u8, so a context map that uses cluster 255
         // yields 256 histograms; compute the count in usize to avoid overflow.
-        let num_histograms = *context_map.iter().max().unwrap() as usize + 1;
+        let num_histograms = context_map.max() as usize + 1;
         let uint_configs = ((0..num_histograms).map(|_| HybridUint::decode(log_alpha_size, br)))
             .collect::<Result<_>>()?;
 
@@ -712,16 +712,19 @@ impl Histograms {
 
     #[inline(always)]
     pub fn map_context_to_cluster(&self, context: usize) -> usize {
-        self.context_map[context] as usize
+        match &self.context_map {
+            ContextMap::AllZero(_) => 0,
+            ContextMap::Dense(map) => map[context] as usize,
+        }
     }
 
     #[allow(dead_code)]
     pub fn num_histograms(&self) -> usize {
-        *self.context_map.iter().max().unwrap() as usize + 1
+        self.context_map.max() as usize + 1
     }
 
     pub fn resize(&mut self, num_contexts: usize) {
-        self.context_map.resize(num_contexts, 0);
+        self.context_map.resize(num_contexts);
     }
 
     /// Returns true if the config 420 fast path can be safely used.
@@ -818,7 +821,7 @@ mod test {
                 min_length: None,
             },
             lz77_length_uint: None,
-            context_map: vec![0],
+            context_map: ContextMap::Dense(vec![0]),
             lz_dist_cluster: 0,
             log_alpha_size: 15,
             uint_configs: vec![uint_config],
@@ -835,7 +838,7 @@ mod test {
                 min_length: Some(3),
             },
             lz77_length_uint: None,
-            context_map: vec![0],
+            context_map: ContextMap::Dense(vec![0]),
             lz_dist_cluster: 1, // cluster 1 is dist cluster, cluster 0 is data
             log_alpha_size: 15,
             uint_configs: vec![uint_config, uint_config],
@@ -857,7 +860,7 @@ mod test {
                 min_length: Some(3),
             },
             lz77_length_uint: Some(uint_config),
-            context_map: vec![0, 0],
+            context_map: ContextMap::Dense(vec![0, 0]),
             lz_dist_cluster: 0,
             log_alpha_size: 15,
             uint_configs: vec![uint_config],

@@ -95,14 +95,15 @@ impl BlockContextMap {
             let context_map_size = 3 * NUM_ORDERS * num_lf_contexts * (num_qf_thresholds + 1);
             let context_map = decode_context_map(context_map_size, br, lz77_scratch)?;
             assert_eq!(context_map.len(), context_map_size);
-            let num_contexts = *context_map.iter().max().unwrap() as usize + 1;
+            let num_contexts = context_map.max() as usize + 1;
             if num_contexts > 16 {
                 Err(Error::TooManyBlockContexts)
             } else {
                 Ok(BlockContextMap {
                     lf_thresholds,
                     qf_thresholds,
-                    context_map,
+                    // The map length is bounded by the size check above.
+                    context_map: context_map.into_dense(),
                     num_lf_contexts,
                     num_contexts,
                 })

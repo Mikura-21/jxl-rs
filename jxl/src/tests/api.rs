@@ -1335,6 +1335,19 @@ fn test_fuzzer_context_map_num_histograms_overflow() {
     );
 }
 
+/// Regression test: a context map that is all zeros (zero-bits simple form)
+/// covering 1,900,800 declared contexts. This shouldn't panic or hang.
+#[test]
+fn test_hf_global_zero_bits_context_map() {
+    let data = include_bytes!("../../tests/testdata/hf_global_zero_bits_context_map.jxl");
+    let result = decode::<f32>(data, Default::default());
+    assert!(
+        matches!(result, Err(Error::SectionTooShort)),
+        "expected a section-too-short error, got {:?}",
+        result.map(|_| "a decoded image")
+    );
+}
+
 /// Regression test: two nested palette transforms, where the inner one has no colors and no
 /// deltas and so produces a 0x1 palette channel. `Image` allocates such a channel as 0x0, and
 /// applying the outer palette on top of it used to compare the declared 0x1 size against the
